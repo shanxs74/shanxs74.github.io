@@ -1,0 +1,289 @@
+---
+// Subtle "Conqueror's Haki" ambience: faint crimson/gold sparks and the occasional
+// black-and-crimson lightning bolt, drawn on one fixed 2D canvas.
+//
+// Layering: the banner is z-10, the content panels are z-30 and the navbar is z-50, so this
+// canvas (z-20) shows over the banner and the page background but always BEHIND cards and text.
+//
+// Cost control: half-resolution canvas, ~30 fps, a few dozen particles, and the loop is
+// stopped entirely in light mode, in background tabs and with prefers-reduced-motion.
+---
+
+<canvas id="haki-canvas" aria-hidden="true"></canvas>
+
+<style is:global>
+	#haki-canvas {
+		position: fixed;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		z-index: 20;
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 1.2s ease;
+	}
+	html.dark #haki-canvas.haki-on {
+		opacity: 1;
+	}
+</style>
+
+<script>
+type Point = [number, number];
+
+interface Spark {
+	x: number;
+	y: number;
+	vx: number;
+	vy: number;
+	age: number;
+	life: number;
+	size: number;
+	gold: boolean;
+	phase: number;
+}
+
+interface Bolt {
+	main: Point[];
+	branches: Point[][];
+	age: number;
+	life: number;
+	width: number;
+	gold: boolean;
+}
+
+const CRIMSON = "220, 20, 60"; // #DC143C
+const CORE = "255, 96, 116";
+const DEEP = "120, 6, 24";
+const GOLD = "201, 162, 39";
+
+const SCALE = 0.5; // render at half resolution; CSS stretches it back up
+const FRAME_MS = 1000 / 30;
+const MAX_BOLTS = 2;
+
+function jaggedPath(
+	x1: number,
+	y1: number,
+	x2: number,
+	y2: number,
+	roughness: number,
+	depth: number,
+): Point[] {
+	let points: Point[] = [
+		[x1, y1],
+		[x2, y2],
+	];
+	let offset = roughness;
+	for (let i = 0; i < depth; i++) {
+		const next: Point[] = [];
+		for (let j = 0; j < points.length - 1; j++) {
+			const a = points[j];
+			const b = points[j + 1];
+			if (!a || !b) continue;
+			const dx = b[0] - a[0];
+			const dy = b[1] - a[1];
+			const len = Math.hypot(dx, dy) || 1;
+			const shift = (Math.random() - 0.5) * offset;
+			next.push(a, [
+				(a[0] + b[0]) / 2 + (-dy / len) * shift,
+				(a[1] + b[1]) / 2 + (dx / len) * shift,
+			]);
+		}
+		const last = points[points.length - 1];
+		if (last) next.push(last);
+		points = next;
+		offset *= 0.5;
+	}
+	return points;
+}
+
+function initHaki(canvas: HTMLCanvasElement): void {
+	if (canvas.dataset.hakiReady) return;
+	canvas.dataset.hakiReady = "1";
+
+	const ctx = canvas.getContext("2d");
+	if (!ctx) return;
+
+	const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+	const root = document.documentElement;
+
+	let w = 1;
+	let h = 1;
+	let sparks: Spark[] = [];
+	let bolts: Bolt[] = [];
+	let running = false;
+	let raf = 0;
+	let last = 0;
+	let nextBolt = 0;
+
+	function newSpark(spread: boolean): Spark {
+		const life = 6 + Math.random() * 8;
+		return {
+			x: Math.random() * w,
+			y: spread ? Math.random() * h : h + Math.random() * 20,
+			vx: (Math.random() - 0.5) * 6,
+			vy: -(6 + Math.random() * 14),
+			age: spread ? Math.random() * life : 0,
+			life,
+			size: 0.5 + Math.random() * 0.9,
+			gold: Math.random() < 0.2,
+			phase: Math.random() * Math.PI * 2,
+		};
+	}
+
+	function resize(): void {
+		w = Math.max(1, Math.round(window.innerWidth * SCALE));
+		h = Math.max(1, Math.round(window.innerHeight * SCALE));
+		canvas.width = w;
+		canvas.height = h;
+		const count = Math.round(
+			Math.min(30, Math.max(12, (window.innerWidth * window.innerHeight) / 65000)),
+		);
+		sparks = Array.from({ length: count }, () => newSpark(true));
+	}
+
+	function newBolt(): Bolt {
+		const startX = w * (0.1 + Math.random() * 0.8);
+		const endX = startX + (Math.random() - 0.5) * w * 0.4;
+		const endY = h * (0.35 + Math.random() * 0.45);
+		const main = jaggedPath(startX, -4, endX, endY, h * 0.25, 6);
+		const branches: Point[][] = [];
+		const branchCount = 1 + Math.floor(Math.random() * 2);
+		for (let i = 0; i < branchCount; i++) {
+			const from = main[Math.floor(main.length * (0.2 + Math.random() * 0.5))];
+			if (!from) continue;
+			branches.push(
+				jaggedPath(
+					from[0],
+					from[1],
+					from[0] + (Math.random() - 0.5) * w * 0.25,
+					from[1] + h * (0.1 + Math.random() * 0.15),
+					h * 0.1,
+					4,
+				),
+			);
+		}
+		return {
+			main,
+			branches,
+			age: 0,
+			life: 0.35 + Math.random() * 0.3,
+			width: 1,
+			gold: Math.random() < 0.25,
+		};
+	}
+
+	function strokePath(points: Point[], lineWidth: number, color: string): void {
+		const first = points[0];
+		if (!ctx || !first) return;
+		ctx.beginPath();
+		ctx.moveTo(first[0], first[1]);
+		for (let i = 1; i < points.length; i++) {
+			const p = points[i];
+			if (p) ctx.lineTo(p[0], p[1]);
+		}
+		ctx.strokeStyle = color;
+		ctx.lineWidth = lineWidth;
+		ctx.stroke();
+	}
+
+	function drawBolt(bolt: Bolt): void {
+		const t = bolt.age / bolt.life;
+		// quick rise, then decay, with a little flicker so it reads as electricity
+		const envelope = t < 0.12 ? t / 0.12 : (1 - t) ** 1.5;
+		const f = envelope * (0.65 + Math.random() * 0.35);
+		const core = bolt.gold ? GOLD : CORE;
+		for (const path of [bolt.main, ...bolt.branches]) {
+			const scale = path === bolt.main ? 1 : 0.6;
+			// black halo is only visible over the banner image; on the page it blends into the background
+			strokePath(path, bolt.width * 6 * scale, `rgba(0, 0, 0, ${0.3 * f})`);
+			strokePath(path, bolt.width * 3.2 * scale, `rgba(${DEEP}, ${0.14 * f})`);
+			strokePath(path, bolt.width * 1.8 * scale, `rgba(${CRIMSON}, ${0.2 * f})`);
+			strokePath(path, bolt.width * scale, `rgba(${core}, ${0.38 * f})`);
+		}
+	}
+
+	function tick(now: number): void {
+		raf = requestAnimationFrame(tick);
+		if (now - last < FRAME_MS || !ctx) return;
+		const dt = Math.min((now - last) / 1000, 0.1);
+		last = now;
+
+		ctx.clearRect(0, 0, w, h);
+		ctx.lineJoin = "round";
+		ctx.lineCap = "round";
+
+		for (let i = 0; i < sparks.length; i++) {
+			const s = sparks[i];
+			if (!s) continue;
+			s.age += dt;
+			if (s.age >= s.life || s.y < -4) {
+				sparks[i] = newSpark(false);
+				continue;
+			}
+			s.x += (s.vx + Math.sin(s.age * 1.3 + s.phase) * 3) * dt;
+			s.y += s.vy * dt;
+			const alpha = 0.55 * Math.sin((Math.PI * s.age) / s.life);
+			ctx.fillStyle = `rgba(${s.gold ? GOLD : CRIMSON}, ${alpha})`;
+			ctx.beginPath();
+			ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+			ctx.fill();
+		}
+
+		if (now >= nextBolt && bolts.length < MAX_BOLTS) {
+			bolts.push(newBolt());
+			nextBolt = now + 3500 + Math.random() * 6500;
+		}
+		for (const bolt of bolts) {
+			bolt.age += dt;
+			if (bolt.age < bolt.life) drawBolt(bolt);
+		}
+		bolts = bolts.filter((b) => b.age < b.life);
+	}
+
+	function start(): void {
+		if (running) return;
+		running = true;
+		canvas.classList.add("haki-on");
+		last = performance.now();
+		nextBolt = last + 2000 + Math.random() * 3000;
+		raf = requestAnimationFrame(tick);
+	}
+
+	function stop(): void {
+		if (!running) return;
+		running = false;
+		cancelAnimationFrame(raf);
+		canvas.classList.remove("haki-on");
+		bolts = [];
+		// clear after the CSS fade-out has finished
+		window.setTimeout(() => {
+			if (!running && ctx) ctx.clearRect(0, 0, w, h);
+		}, 1300);
+	}
+
+	function sync(): void {
+		const shouldRun =
+			root.classList.contains("dark") && !document.hidden && !reduceMotion.matches;
+		if (shouldRun) start();
+		else stop();
+	}
+
+	resize();
+	let resizeTimer = 0;
+	window.addEventListener("resize", () => {
+		window.clearTimeout(resizeTimer);
+		resizeTimer = window.setTimeout(resize, 200);
+	});
+	document.addEventListener("visibilitychange", sync);
+	reduceMotion.addEventListener("change", sync);
+	// the theme switch toggles the "dark" class on <html>
+	new MutationObserver(sync).observe(root, {
+		attributes: true,
+		attributeFilter: ["class"],
+	});
+	sync();
+}
+
+const canvas = document.getElementById("haki-canvas");
+if (canvas instanceof HTMLCanvasElement) initHaki(canvas);
+</script>
