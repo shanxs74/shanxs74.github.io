@@ -25,7 +25,7 @@ I try to keep every writeup in the same shape so it's easy to skim and easy to r
 4. **Findings:** what happened, with indicators of compromise where relevant.
 5. **Detection ideas:** how I'd catch this earlier next time.
 6. **Lessons learned:** what I'd do differently.
-
+```
 ## Adding a new post
 
 New writeups live in `src/content/posts/` as Markdown files that start with this front matter:
