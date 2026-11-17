@@ -1,5 +1,5 @@
 ---
-title: Welcome to 0xShanxs
+title: Welcome to 0xShanXs
 published: 2026-11-17
 description: An introduction to my cybersecurity journey, my SOC labs and the Blue Team writeups you'll find on this blog.
 tags: [Cybersecurity, Blue Team, SOC]
